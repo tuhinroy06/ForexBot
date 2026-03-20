@@ -427,12 +427,16 @@ class SignalEngine:
 
     async def get_signal(self, pair: str) -> dict:
         try:
-            df_h1, df_h4 = await asyncio.gather(
-                self.fetch_ohlcv(pair, "60min"),
-                self.fetch_ohlcv(pair, "240min"),
-            )
+            # Fetch H1 first, wait 13s (AV free = 5 req/min), then fetch H4
+            df_h1 = await self.fetch_ohlcv(pair, "60min")
+            await asyncio.sleep(13)  # respect AV rate limit (5 req/min)
+            df_h4 = await self.fetch_ohlcv(pair, "240min")
             if df_h1 is None or len(df_h1) < 30:
-                return self._error_signal(pair, "Insufficient H1 data")
+                # Try using H1 resampled as H4 fallback
+                if df_h1 is not None and len(df_h1) >= 20:
+                    df_h4 = await self._resample_to_h4(pair) if pair not in ("XAUUSD","XAGUSD") else df_h4
+                else:
+                    return self._error_signal(pair, "Rate limited or no data. Try again in 1 min.")
             return self.analyze(df_h1, df_h4, pair)
         except Exception as e:
             return self._error_signal(pair, str(e))
