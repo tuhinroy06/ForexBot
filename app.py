@@ -107,6 +107,16 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     for job in jobs: job.schedule_removal()
     await update.message.reply_text("🔕 Unsubscribed.")
 
+async def send_signals_separately(query, pairs: list):
+    """Send each signal as a separate message to avoid Telegram 4096 char limit."""
+    for pair in pairs:
+        result = await signal_engine.get_signal(pair)
+        text = format_signal(result)
+        # Truncate just in case a single signal is somehow too long
+        if len(text) > 4000:
+            text = text[:4000] + "..."
+        await query.message.reply_text(text, parse_mode="Markdown")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
