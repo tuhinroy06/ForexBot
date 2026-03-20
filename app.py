@@ -1,280 +1,386 @@
 """
-Forex Signal Bot v2 — app.py
-Fixed: callbacks use send_message (no edit) to avoid timeout & BadRequest errors
-Fixed: Message_too_long — each signal sent as separate message
+Signal Engine v2 — Twelve Data API
+- Free tier: 800 requests/day, 8 req/min
+- Endpoint: /time_series for OHLCV
+- Supports all major/minor forex pairs and XAU/XAG
 """
 
 import asyncio
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from signals import SignalEngine
-from news import NewsEngine
-from config import Config
+import aiohttp
+import pandas as pd
+import numpy as np
+import pickle
+import os
+import time
+from datetime import datetime, timezone
+from typing import Optional, Tuple
 
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Twelve Data symbol format: "EUR/USD"
+TD_SYMBOLS = {
+    "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
+    "USDCHF": "USD/CHF", "AUDUSD": "AUD/USD", "USDCAD": "USD/CAD",
+    "NZDUSD": "NZD/USD", "EURGBP": "EUR/GBP", "EURJPY": "EUR/JPY",
+    "GBPJPY": "GBP/JPY", "AUDJPY": "AUD/JPY", "CADJPY": "CAD/JPY",
+    "CHFJPY": "CHF/JPY", "EURCHF": "EUR/CHF", "EURAUD": "EUR/AUD",
+    "EURCAD": "EUR/CAD", "GBPAUD": "GBP/AUD", "GBPCAD": "GBP/CAD",
+    "GBPCHF": "GBP/CHF", "AUDCAD": "AUD/CAD", "AUDCHF": "AUD/CHF",
+    "AUDNZD": "AUD/NZD", "NZDJPY": "NZD/JPY",
+    "XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD",
+}
 
-config      = Config()
-signal_engine = SignalEngine(config.FINNHUB_API_KEY)
-news_engine = NewsEngine()
+DISPLAY_NAMES = {
+    "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
+    "USDCHF": "USD/CHF", "AUDUSD": "AUD/USD", "USDCAD": "USD/CAD",
+    "NZDUSD": "NZD/USD", "EURGBP": "EUR/GBP", "EURJPY": "EUR/JPY",
+    "GBPJPY": "GBP/JPY", "AUDJPY": "AUD/JPY", "CADJPY": "CAD/JPY",
+    "CHFJPY": "CHF/JPY", "EURCHF": "EUR/CHF", "EURAUD": "EUR/AUD",
+    "EURCAD": "EUR/CAD", "GBPAUD": "GBP/AUD", "GBPCAD": "GBP/CAD",
+    "GBPCHF": "GBP/CHF", "AUDCAD": "AUD/CAD", "AUDCHF": "AUD/CHF",
+    "AUDNZD": "AUD/NZD", "NZDJPY": "NZD/JPY",
+    "XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD",
+}
 
-MAJORS      = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD"]
-MINORS      = ["EURGBP","EURJPY","GBPJPY","AUDJPY","CADJPY","CHFJPY",
-               "EURCHF","EURAUD","EURCAD","GBPAUD","GBPCAD","GBPCHF",
-               "AUDCAD","AUDCHF","AUDNZD","NZDJPY"]
-COMMODITIES = ["XAUUSD","XAGUSD"]
-PAIRS       = MAJORS + MINORS + COMMODITIES
+PIP_SIZE = {
+    "EURUSD": 0.0001, "GBPUSD": 0.0001, "USDCHF": 0.0001,
+    "AUDUSD": 0.0001, "USDCAD": 0.0001, "NZDUSD": 0.0001,
+    "EURGBP": 0.0001, "EURCHF": 0.0001, "EURAUD": 0.0001,
+    "EURCAD": 0.0001, "GBPAUD": 0.0001, "GBPCAD": 0.0001,
+    "GBPCHF": 0.0001, "AUDCAD": 0.0001, "AUDCHF": 0.0001,
+    "AUDNZD": 0.0001,
+    "USDJPY": 0.01, "EURJPY": 0.01, "GBPJPY": 0.01,
+    "AUDJPY": 0.01, "CADJPY": 0.01, "CHFJPY": 0.01, "NZDJPY": 0.01,
+    "XAUUSD": 0.10, "XAGUSD": 0.01,
+}
 
+SL_PIPS = {
+    "EURUSD": 20, "GBPUSD": 25, "USDJPY": 20, "USDCHF": 20,
+    "AUDUSD": 20, "USDCAD": 22, "NZDUSD": 20,
+    "EURGBP": 18, "EURJPY": 25, "GBPJPY": 35, "AUDJPY": 25,
+    "CADJPY": 25, "CHFJPY": 25, "EURCHF": 20, "EURAUD": 25,
+    "EURCAD": 25, "GBPAUD": 35, "GBPCAD": 35, "GBPCHF": 30,
+    "AUDCAD": 22, "AUDCHF": 22, "AUDNZD": 22, "NZDJPY": 25,
+    "XAUUSD": 50, "XAGUSD": 30,
+}
 
-# ── Formatter ─────────────────────────────────────────────────────────────────
-
-def format_signal(s: dict) -> str:
-    if s["direction"] == "N/A":
-        reason = s.get("news_sentiment","").replace("❌ ","")
-        return f"⚠️ *{s['pair']}* — {reason}"
-    dir_emoji = "🟢 BUY" if s["direction"] == "BUY" else "🔴 SELL"
-    conf      = s["confidence"]
-    bar       = "█" * int(conf / 10) + "░" * (10 - int(conf / 10))
-    sess_icon = "✅" if s.get("in_session") else "⏸"
-    ind       = s.get("indicators", {})
-    ml_tag    = " _(ML)_" if s.get("ml_used") else ""
-    return (
-        f"*{s['pair']}* — {dir_emoji}\n"
-        f"🕐 `{s['timestamp']}`\n\n"
-        f"💰 Entry: `{s['entry']}`\n"
-        f"🛑 SL:    `{s['sl']}`\n"
-        f"🎯 TP1:   `{s['tp1']}`\n"
-        f"🎯 TP2:   `{s['tp2']}`\n\n"
-        f"📊 Confidence: {conf}%{ml_tag} `{bar}`\n"
-        f"🏆 Quality: {s.get('quality','N/A')}\n"
-        f"📈 H4 Trend: {s.get('h4_trend','N/A')}\n"
-        f"{sess_icon} Session: {s.get('session','N/A')}\n\n"
-        f"RSI: `{ind.get('rsi',0):.1f}` {ind.get('rsi_signal','')}\n"
-        f"MACD: {ind.get('macd_signal','')}\n"
-        f"EMA: {ind.get('ema_cross','')}\n"
-        f"Stoch: {ind.get('stochastic','')}\n"
-        f"ADX: {ind.get('adx','')}\n"
-        f"ATR: `{ind.get('atr',0)}`\n\n"
-        f"📰 News: {s.get('news_sentiment','N/A')}\n"
-        f"⚠️ _Use proper risk management._"
-    )
-
-
-# ── Safe sender (splits messages > 4096 chars) ────────────────────────────────
-
-async def safe_send(send_fn, text: str, **kwargs):
-    if len(text) <= 4096:
-        await send_fn(text, **kwargs)
-    else:
-        for i in range(0, len(text), 4096):
-            await send_fn(text[i:i+4096], **kwargs)
+SESSIONS = {
+    "London":   (7, 16),
+    "New York": (13, 21),
+}
 
 
-# ── Core signal sender ────────────────────────────────────────────────────────
+class SignalEngine:
+    def __init__(self, api_key: str):
+        self.api_key  = api_key
+        self.base_url = "https://api.twelvedata.com"
+        self.ml_model = self._load_ml_model()
 
-async def send_signals(send_fn, pairs: list):
-    """Send one message per pair. Finnhub = 60 req/min, no delays needed."""
-    for pair in pairs:
-        result = await signal_engine.get_signal(pair)
-        await safe_send(send_fn, format_signal(result), parse_mode="Markdown")
+    # ── Data Fetching ─────────────────────────────────────────────────────────
 
+    async def fetch_ohlcv(self, pair: str, interval: str = "1h", outputsize: int = 100) -> Optional[pd.DataFrame]:
+        """
+        Fetch OHLCV from Twelve Data /time_series endpoint.
+        interval: "1h" = H1, "4h" = H4
+        """
+        symbol = TD_SYMBOLS.get(pair)
+        if not symbol:
+            return None
 
-# ── Commands ──────────────────────────────────────────────────────────────────
+        params = {
+            "symbol":     symbol,
+            "interval":   interval,
+            "outputsize": outputsize,
+            "apikey":     self.api_key,
+            "format":     "JSON",
+        }
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 All Signals",  callback_data="signals_all")],
-        [InlineKeyboardButton("💱 Majors",        callback_data="signals_majors"),
-         InlineKeyboardButton("🔀 Minors",        callback_data="signals_minors")],
-        [InlineKeyboardButton("🥇 Commodities",   callback_data="signals_commodities")],
-        [InlineKeyboardButton("📰 News",          callback_data="news"),
-         InlineKeyboardButton("ℹ️ Help",          callback_data="help")],
-    ])
-    await update.message.reply_text(
-        "🤖 *Forex Signal Bot v2*\n\n"
-        "✅ H1 + H4 multi-timeframe\n"
-        "✅ London / NY session filter\n"
-        "✅ RSI, MACD, EMA, BB, Stoch, ADX, ATR\n"
-        "✅ ML confidence scoring\n"
-        "✅ 25 currency pairs\n\n"
-        "Select an option:",
-        parse_mode="Markdown",
-        reply_markup=keyboard,
-    )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/time_series",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    data = await resp.json()
+        except Exception as e:
+            return None
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📖 *Commands*\n\n"
-        "/start — Main menu\n"
-        "/signal EURUSD — Single pair\n"
-        "/signals — All 25 pairs\n"
-        "/majors — Major pairs\n"
-        "/minors — Minor crosses\n"
-        "/commodities — Gold & Silver\n"
-        "/news — Economic calendar\n"
-        "/subscribe — Hourly auto signals\n"
-        "/unsubscribe — Stop\n\n"
-        "⭐ Quality:\n"
-        "`⭐⭐⭐ HIGH`  → Trade full size\n"
-        "`⭐⭐ MEDIUM` → Trade half size\n"
-        "`⚠️ LOW`     → Skip",
-        parse_mode="Markdown",
-    )
+        # Check for errors
+        if data.get("status") == "error":
+            return None
 
-async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /signal EURUSD")
-        return
-    pair = context.args[0].upper()
-    if pair not in PAIRS:
-        await update.message.reply_text(f"❌ Unknown pair: {pair}")
-        return
-    msg = await update.message.reply_text(f"⏳ Analyzing {pair}...")
-    result = await signal_engine.get_signal(pair)
-    await msg.edit_text(format_signal(result), parse_mode="Markdown")
+        values = data.get("values")
+        if not values:
+            return None
 
-async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Scanning all 25 pairs...")
-    await send_signals(update.message.reply_text, PAIRS)
+        records = []
+        for v in values:
+            try:
+                records.append({
+                    "time":  pd.to_datetime(v["datetime"]),
+                    "open":  float(v["open"]),
+                    "high":  float(v["high"]),
+                    "low":   float(v["low"]),
+                    "close": float(v["close"]),
+                })
+            except Exception:
+                continue
 
-async def majors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Scanning major pairs...")
-    await send_signals(update.message.reply_text, MAJORS)
+        if not records:
+            return None
 
-async def minors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Scanning minor pairs...")
-    await send_signals(update.message.reply_text, MINORS)
+        df = pd.DataFrame(records).sort_values("time").reset_index(drop=True)
+        return df
 
-async def commodities_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Scanning commodities...")
-    await send_signals(update.message.reply_text, COMMODITIES)
+    async def _resample_to_h4(self, df_h1: pd.DataFrame) -> Optional[pd.DataFrame]:
+        if df_h1 is None or len(df_h1) < 8:
+            return None
+        df = df_h1.set_index("time")
+        df_h4 = df.resample("4h").agg({
+            "open":  "first",
+            "high":  "max",
+            "low":   "min",
+            "close": "last",
+        }).dropna().reset_index()
+        return df_h4
 
-async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Fetching news...")
-    text = await news_engine.get_forex_news()
-    await safe_send(msg.edit_text, text, parse_mode="Markdown")
+    # ── Indicators ────────────────────────────────────────────────────────────
 
-async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if context.job_queue.get_jobs_by_name(str(chat_id)):
-        await update.message.reply_text("✅ Already subscribed.")
-        return
-    context.job_queue.run_repeating(
-        auto_signal_job, interval=3600, first=10,
-        chat_id=chat_id, name=str(chat_id),
-    )
-    await update.message.reply_text("✅ Subscribed! Hourly HIGH/MEDIUM signals enabled.")
+    @staticmethod
+    def rsi(s: pd.Series, p: int = 14) -> pd.Series:
+        d = s.diff()
+        g = d.clip(lower=0).ewm(com=p - 1, min_periods=p).mean()
+        l = (-d.clip(upper=0)).ewm(com=p - 1, min_periods=p).mean()
+        return 100 - 100 / (1 + g / l)
 
-async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    jobs = context.job_queue.get_jobs_by_name(str(update.effective_chat.id))
-    if not jobs:
-        await update.message.reply_text("❌ Not subscribed.")
-        return
-    for job in jobs:
-        job.schedule_removal()
-    await update.message.reply_text("🔕 Unsubscribed.")
+    @staticmethod
+    def macd(s: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        e12 = s.ewm(span=12, adjust=False).mean()
+        e26 = s.ewm(span=26, adjust=False).mean()
+        m   = e12 - e26
+        sig = m.ewm(span=9, adjust=False).mean()
+        return m, sig, m - sig
 
+    @staticmethod
+    def bb(s: pd.Series, p: int = 20, k: float = 2.0):
+        mid = s.rolling(p).mean()
+        std = s.rolling(p).std()
+        return mid + k * std, mid, mid - k * std
 
-# ── Callback Handler (uses send_message — NOT edit — to avoid timeouts) ───────
+    @staticmethod
+    def ema(s: pd.Series, p: int) -> pd.Series:
+        return s.ewm(span=p, adjust=False).mean()
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
-    await query.answer()                        # stops spinner immediately
-    data    = query.data
-    chat_id = query.message.chat_id
+    @staticmethod
+    def atr(df: pd.DataFrame, p: int = 14) -> pd.Series:
+        h, l, c = df["high"], df["low"], df["close"].shift(1)
+        tr = pd.concat([h - l, (h - c).abs(), (l - c).abs()], axis=1).max(axis=1)
+        return tr.ewm(span=p, adjust=False).mean()
 
-    # Always send NEW messages, never edit existing ones
-    # edit_message_text causes BadRequest when API calls take > a few seconds
-    def send(text, **kw):
-        return context.bot.send_message(chat_id=chat_id, text=text, **kw)
+    @staticmethod
+    def stochastic(df: pd.DataFrame, k: int = 14, d: int = 3):
+        lo    = df["low"].rolling(k).min()
+        hi    = df["high"].rolling(k).max()
+        pct_k = 100 * (df["close"] - lo) / (hi - lo + 1e-9)
+        return pct_k, pct_k.rolling(d).mean()
 
-    if data == "signals_all":
-        await send("⏳ Scanning all 25 pairs...")
-        await send_signals(send, PAIRS)
+    @staticmethod
+    def adx(df: pd.DataFrame, p: int = 14) -> pd.Series:
+        hi, lo = df["high"], df["low"]
+        up  = hi.diff()
+        dn  = -lo.diff()
+        pdm = up.where((up > dn) & (up > 0), 0.0)
+        ndm = dn.where((dn > up) & (dn > 0), 0.0)
+        atr_v = (hi - lo).ewm(span=p, adjust=False).mean()
+        pdi   = 100 * pdm.ewm(span=p, adjust=False).mean() / (atr_v + 1e-9)
+        ndi   = 100 * ndm.ewm(span=p, adjust=False).mean() / (atr_v + 1e-9)
+        dx    = 100 * (pdi - ndi).abs() / (pdi + ndi + 1e-9)
+        return dx.ewm(span=p, adjust=False).mean()
 
-    elif data == "signals_majors":
-        await send("⏳ Scanning major pairs...")
-        await send_signals(send, MAJORS)
+    # ── Session / H4 / ML ─────────────────────────────────────────────────────
 
-    elif data == "signals_minors":
-        await send("⏳ Scanning minor pairs...")
-        await send_signals(send, MINORS)
+    @staticmethod
+    def in_trading_session() -> Tuple[bool, str]:
+        hour   = datetime.now(timezone.utc).hour
+        active = [n for n, (s, e) in SESSIONS.items() if s <= hour < e]
+        return (True, " + ".join(active)) if active else (False, "Asian (low liquidity)")
 
-    elif data == "signals_commodities":
-        await send("⏳ Scanning commodities...")
-        await send_signals(send, COMMODITIES)
+    def h4_trend(self, df_h4: Optional[pd.DataFrame]) -> str:
+        if df_h4 is None or len(df_h4) < 55:
+            return "NEUTRAL"
+        close = df_h4["close"]
+        e20   = self.ema(close, 20).iloc[-1]
+        e50   = self.ema(close, 50).iloc[-1]
+        price = close.iloc[-1]
+        if price > e20 > e50:   return "BULL"
+        elif price < e20 < e50: return "BEAR"
+        return "NEUTRAL"
 
-    elif data.startswith("signal_"):
-        pair = data.replace("signal_", "")
-        await send(f"⏳ Analyzing {pair}...")
-        result = await signal_engine.get_signal(pair)
-        await safe_send(send, format_signal(result), parse_mode="Markdown")
+    def _load_ml_model(self):
+        path = os.path.join(os.path.dirname(__file__), "ml_model.pkl")
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    return pickle.load(f)
+            except Exception:
+                pass
+        return None
 
-    elif data == "news":
-        await send("⏳ Fetching news...")
-        text = await news_engine.get_forex_news()
-        await safe_send(send, text, parse_mode="Markdown")
+    def ml_confidence(self, features: dict) -> Optional[float]:
+        if self.ml_model is None:
+            return None
+        try:
+            X    = np.array([[features["rsi"], features["macd_hist"],
+                               features["bb_pos"], features["ema_diff"],
+                               features["atr_norm"], features["stoch_k"],
+                               features["adx"], features["h4_bull"],
+                               features["in_session"]]])
+            prob = self.ml_model.predict_proba(X)[0]
+            return round(max(prob) * 100, 1)
+        except Exception:
+            return None
 
-    elif data == "help":
-        await send(
-            "⭐⭐⭐ HIGH   → H4 aligned + London/NY session\n"
-            "⭐⭐ MEDIUM  → H4 aligned, may be off-session\n"
-            "⚠️ LOW      → H4 conflict — skip\n\n"
-            "Trade HIGH quality signals only."
-        )
+    # ── Analysis ──────────────────────────────────────────────────────────────
 
+    def analyze(self, df_h1: pd.DataFrame, df_h4: Optional[pd.DataFrame], pair: str) -> dict:
+        close = df_h1["close"]
+        price = close.iloc[-1]
 
-# ── Auto Hourly Job ───────────────────────────────────────────────────────────
+        rsi_s             = self.rsi(close)
+        _, _, macd_hist_s = self.macd(close)
+        bb_up, _, bb_lo   = self.bb(close)
+        e9, e21, e50      = self.ema(close, 9), self.ema(close, 21), self.ema(close, 50)
+        atr_s             = self.atr(df_h1)
+        stk, _            = self.stochastic(df_h1)
+        adx_s             = self.adx(df_h1)
 
-async def auto_signal_job(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id
+        rsi_v      = rsi_s.iloc[-1]
+        mhist_v    = macd_hist_s.iloc[-1]
+        mhist_prev = macd_hist_s.iloc[-2]
+        bb_range   = bb_up.iloc[-1] - bb_lo.iloc[-1]
+        bb_pos     = (price - bb_lo.iloc[-1]) / bb_range if bb_range > 0 else 0.5
+        e9_v, e21_v, e50_v = e9.iloc[-1], e21.iloc[-1], e50.iloc[-1]
+        e9_p, e21_p        = e9.iloc[-2], e21.iloc[-2]
+        atr_v      = atr_s.iloc[-1]
+        stk_v      = stk.iloc[-1]
+        adx_v      = adx_s.iloc[-1]
 
-    def send(text, **kw):
-        return context.bot.send_message(chat_id=chat_id, text=text, **kw)
+        trend_h4              = self.h4_trend(df_h4)
+        in_session, sess_name = self.in_trading_session()
 
-    signals = []
-    for pair in PAIRS:
-        result = await signal_engine.get_signal(pair)
-        if "LOW" not in result.get("quality", ""):
-            signals.append(result)
+        score = 0; max_score = 0
 
-    if not signals:
-        await send("🔔 No HIGH/MEDIUM signals this hour. Market off-session or ranging.")
-        return
+        def add(val, w):
+            nonlocal score, max_score
+            score += val * w; max_score += w
 
-    await send(f"🔔 *Hourly Update — {len(signals)} signals*", parse_mode="Markdown")
-    for result in signals:
-        await safe_send(send, format_signal(result), parse_mode="Markdown")
+        rsi_lbl = ("🟢 Oversold" if rsi_v < 30 else "🟡 Below mid" if rsi_v < 45
+                   else "🔴 Overbought" if rsi_v > 70 else "🟡 Above mid")
+        add(+2 if rsi_v < 30 else +1 if rsi_v < 45 else -2 if rsi_v > 70 else -1 if rsi_v > 55 else 0, 2)
 
+        if mhist_v > 0 and mhist_prev <= 0:   macd_lbl = "🟢 Bull crossover"; add(+3, 3)
+        elif mhist_v < 0 and mhist_prev >= 0: macd_lbl = "🔴 Bear crossover"; add(-3, 3)
+        elif mhist_v > 0:                      macd_lbl = "🟢 Bullish";        add(+1, 3)
+        else:                                  macd_lbl = "🔴 Bearish";        add(-1, 3)
 
-# ── Error Handler ─────────────────────────────────────────────────────────────
+        if   e9_v > e21_v and e9_p <= e21_p:  ema_lbl = "🟢 Golden cross";   add(+2, 2)
+        elif e9_v < e21_v and e9_p >= e21_p:  ema_lbl = "🔴 Death cross";    add(-2, 2)
+        elif e9_v > e21_v > e50_v:            ema_lbl = "🟢 Bull alignment"; add(+1, 2)
+        elif e9_v < e21_v < e50_v:            ema_lbl = "🔴 Bear alignment"; add(-1, 2)
+        else:                                  ema_lbl = "🟡 Mixed";           add(0,  2)
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Error: {context.error}")
+        if   bb_pos < 0.15: bb_lbl = "🟢 Lower band"; add(+1, 1)
+        elif bb_pos > 0.85: bb_lbl = "🔴 Upper band"; add(-1, 1)
+        else:               bb_lbl = f"🟡 Mid {bb_pos:.0%}"; add(0, 1)
 
+        if   stk_v < 20: stoch_lbl = "🟢 Oversold";   add(+1, 1)
+        elif stk_v > 80: stoch_lbl = "🔴 Overbought"; add(-1, 1)
+        else:            stoch_lbl = f"🟡 {stk_v:.0f}"; add(0, 1)
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+        adx_lbl = f"{'Strong' if adx_v > 25 else 'Weak'} ({adx_v:.0f})"
+        if adx_v > 25: score *= 1.2
 
-def main():
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+        h4_map = {"BULL": (+1,"🟢 Bullish"), "BEAR": (-1,"🔴 Bearish"), "NEUTRAL": (0,"🟡 Neutral")}
+        h4_score, h4_lbl = h4_map[trend_h4]
+        add(h4_score * 4, 4)
 
-    app.add_handler(CommandHandler("start",       start))
-    app.add_handler(CommandHandler("help",        help_command))
-    app.add_handler(CommandHandler("signal",      signal_command))
-    app.add_handler(CommandHandler("signals",     signals_command))
-    app.add_handler(CommandHandler("majors",      majors_command))
-    app.add_handler(CommandHandler("minors",      minors_command))
-    app.add_handler(CommandHandler("commodities", commodities_command))
-    app.add_handler(CommandHandler("news",        news_command))
-    app.add_handler(CommandHandler("subscribe",   subscribe_command))
-    app.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_error_handler(error_handler)
+        score *= 1.15 if in_session else 0.70
 
-    logger.info("Bot started.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+        direction   = "BUY" if score > 0 else "SELL"
+        h4_conflict = (direction == "BUY" and trend_h4 == "BEAR") or \
+                      (direction == "SELL" and trend_h4 == "BULL")
 
+        raw_conf = min(abs(score) / max_score * 100, 95) if max_score > 0 else 50
+        raw_conf = max(raw_conf, 40)
+        if h4_conflict: raw_conf *= 0.5
 
-if __name__ == "__main__":
-    main()
+        ml_feats = {
+            "rsi": rsi_v, "macd_hist": mhist_v, "bb_pos": bb_pos,
+            "ema_diff": (e9_v - e21_v) / price, "atr_norm": atr_v / price,
+            "stoch_k": stk_v, "adx": adx_v,
+            "h4_bull": h4_score, "in_session": int(in_session),
+        }
+        ml_conf    = self.ml_confidence(ml_feats)
+        final_conf = round((ml_conf * 0.5 + raw_conf * 0.5) if ml_conf else raw_conf, 1)
+
+        pip     = PIP_SIZE[pair]
+        sl_dist = max(SL_PIPS[pair] * pip, atr_v * 1.2)
+        rr1, rr2 = 1.5, 2.5
+
+        if direction == "BUY":
+            sl  = round(price - sl_dist, 5)
+            tp1 = round(price + sl_dist * rr1, 5)
+            tp2 = round(price + sl_dist * rr2, 5)
+        else:
+            sl  = round(price + sl_dist, 5)
+            tp1 = round(price - sl_dist * rr1, 5)
+            tp2 = round(price - sl_dist * rr2, 5)
+
+        if final_conf >= 75 and in_session and not h4_conflict: quality = "⭐⭐⭐ HIGH"
+        elif final_conf >= 60 and not h4_conflict:              quality = "⭐⭐ MEDIUM"
+        elif h4_conflict:                                        quality = "⚠️ LOW — H4 conflict"
+        else:                                                    quality = "⭐ LOW"
+
+        return {
+            "pair": DISPLAY_NAMES[pair], "direction": direction,
+            "entry": round(price, 5), "sl": sl, "tp1": tp1, "tp2": tp2,
+            "confidence": final_conf, "quality": quality,
+            "timeframe": "H1 + H4",
+            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "session": sess_name, "in_session": in_session, "h4_trend": h4_lbl,
+            "indicators": {
+                "rsi": rsi_v, "rsi_signal": rsi_lbl,
+                "macd_signal": macd_lbl, "ema_cross": ema_lbl,
+                "bb_position": bb_lbl, "stochastic": stoch_lbl,
+                "adx": adx_lbl, "atr": round(atr_v, 5),
+            },
+            "news_sentiment": "Neutral 🟡",
+            "ml_used": ml_conf is not None,
+        }
+
+    async def get_signal(self, pair: str) -> dict:
+        try:
+            df_h1 = await self.fetch_ohlcv(pair, "1h", 100)
+            if df_h1 is None or len(df_h1) < 30:
+                return self._error_signal(pair, "No data from Twelve Data. Check API key at twelvedata.com")
+            df_h4 = await self._resample_to_h4(df_h1)
+            return self.analyze(df_h1, df_h4, pair)
+        except Exception as e:
+            return self._error_signal(pair, str(e))
+
+    @staticmethod
+    def _error_signal(pair: str, reason: str) -> dict:
+        return {
+            "pair": DISPLAY_NAMES.get(pair, pair), "direction": "N/A",
+            "entry": "N/A", "sl": "N/A", "tp1": "N/A", "tp2": "N/A",
+            "confidence": 0, "quality": "❌ Error",
+            "timeframe": "H1+H4",
+            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "session": "Unknown", "in_session": False, "h4_trend": "N/A",
+            "indicators": {
+                "rsi": 0, "rsi_signal": "❌", "macd_signal": "❌",
+                "ema_cross": "❌", "bb_position": "❌",
+                "stochastic": "❌", "adx": "❌", "atr": 0,
+            },
+            "news_sentiment": f"❌ {reason}",
+            "ml_used": False,
+        }
