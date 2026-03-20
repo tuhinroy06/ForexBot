@@ -4,6 +4,7 @@ Fixed: callbacks use send_message (no edit) to avoid timeout & BadRequest errors
 Fixed: Message_too_long — each signal sent as separate message
 """
 
+import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -30,7 +31,8 @@ PAIRS       = MAJORS + MINORS + COMMODITIES
 
 def format_signal(s: dict) -> str:
     if s["direction"] == "N/A":
-        return f"❌ *{s['pair']}* — Data unavailable"
+        reason = s.get("news_sentiment","").replace("❌ ","")
+        return f"⚠️ *{s['pair']}* — {reason}"
     dir_emoji = "🟢 BUY" if s["direction"] == "BUY" else "🔴 SELL"
     conf      = s["confidence"]
     bar       = "█" * int(conf / 10) + "░" * (10 - int(conf / 10))
@@ -72,10 +74,16 @@ async def safe_send(send_fn, text: str, **kwargs):
 # ── Core signal sender ────────────────────────────────────────────────────────
 
 async def send_signals(send_fn, pairs: list):
-    """Send one message per pair using provided send function."""
-    for pair in pairs:
+    """Send one message per pair. Adds delay to respect Alpha Vantage rate limit (5 req/min)."""
+    for i, pair in enumerate(pairs):
+        if i > 0:
+            # AV free tier: 5 req/min. Each signal uses 2 calls (H1+H4).
+            # 13s gap keeps us safely under the limit.
+            await send_fn(f"⏳ Fetching {pair}... ({i+1}/{len(pairs)})")
+            await asyncio.sleep(13)
         result = await signal_engine.get_signal(pair)
-        await safe_send(send_fn, format_signal(result), parse_mode="Markdown")
+        text = format_signal(result)
+        await safe_send(send_fn, text, parse_mode="Markdown")
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
