@@ -129,7 +129,11 @@ class SignalEngine:
         except Exception as e:
             return None
 
-        if data.get("s") != "ok" or not data.get("c"):
+        status = data.get("s")
+        if status == "no_data":
+            # Symbol might need IC MARKETS prefix instead of OANDA
+            return await self._fetch_with_icmarkets(pair, resolution, now, from_ts)
+        if status != "ok" or not data.get("c"):
             return None
 
         df = pd.DataFrame({
@@ -140,6 +144,39 @@ class SignalEngine:
             "close": data["c"],
         })
         return df.sort_values("time").reset_index(drop=True)
+
+    async def _fetch_with_icmarkets(self, pair: str, resolution: str, now: int, from_ts: int) -> Optional[pd.DataFrame]:
+        """Fallback: try IC MARKETS symbol prefix if OANDA returns no_data."""
+        # IC Markets uses different symbol format
+        base = pair[:3]; quote = pair[3:]
+        symbol = f"IC MARKETS:{base}/{quote}"
+        params = {
+            "symbol":     symbol,
+            "resolution": resolution,
+            "from":       from_ts,
+            "to":         now,
+            "token":      self.api_key,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/forex/candle",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    data = await resp.json()
+            if data.get("s") == "ok" and data.get("c"):
+                df = pd.DataFrame({
+                    "time":  pd.to_datetime(data["t"], unit="s"),
+                    "open":  data["o"],
+                    "high":  data["h"],
+                    "low":   data["l"],
+                    "close": data["c"],
+                })
+                return df.sort_values("time").reset_index(drop=True)
+        except Exception:
+            pass
+        return None
 
     async def _resample_to_h4(self, df_h1: pd.DataFrame) -> Optional[pd.DataFrame]:
         """Resample H1 dataframe into H4 candles."""
