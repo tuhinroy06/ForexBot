@@ -8,7 +8,7 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
 
     steps:
       - uses: actions/checkout@v4
@@ -26,5 +26,5 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: python app.py
-        timeout-minutes: 4
+        run: timeout 270 python app.py || true
+        # 270 seconds = 4.5 min, cron fires every 5 min = no gap
