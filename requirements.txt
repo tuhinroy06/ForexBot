@@ -1,0 +1,10 @@
+python-telegram-bot[job-queue]==21.6
+aiohttp==3.9.3
+pandas==2.2.1
+numpy==1.26.4
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1
+apscheduler==3.10.4
+lxml==5.1.0
+scikit-learn==1.4.1
+scikit-learn==1.4.1
