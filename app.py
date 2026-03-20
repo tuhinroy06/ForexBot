@@ -16,7 +16,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 config      = Config()
-signal_engine = SignalEngine(config.ALPHA_VANTAGE_API_KEY)
+signal_engine = SignalEngine(config.FINNHUB_API_KEY)
 news_engine = NewsEngine()
 
 MAJORS      = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD"]
@@ -74,16 +74,10 @@ async def safe_send(send_fn, text: str, **kwargs):
 # ── Core signal sender ────────────────────────────────────────────────────────
 
 async def send_signals(send_fn, pairs: list):
-    """Send one message per pair. Adds delay to respect Alpha Vantage rate limit (5 req/min)."""
-    for i, pair in enumerate(pairs):
-        if i > 0:
-            # AV free tier: 5 req/min. Each signal uses 2 calls (H1+H4).
-            # 13s gap keeps us safely under the limit.
-            await send_fn(f"⏳ Fetching {pair}... ({i+1}/{len(pairs)})")
-            await asyncio.sleep(13)
+    """Send one message per pair. Finnhub = 60 req/min, no delays needed."""
+    for pair in pairs:
         result = await signal_engine.get_signal(pair)
-        text = format_signal(result)
-        await safe_send(send_fn, text, parse_mode="Markdown")
+        await safe_send(send_fn, format_signal(result), parse_mode="Markdown")
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
