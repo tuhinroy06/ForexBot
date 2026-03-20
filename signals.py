@@ -1,10 +1,8 @@
 """
-Signal Engine v2 — Finnhub API
-- 60 req/min free tier (no delays needed)
-- Forex candles endpoint: /forex/candle
-- Supports H1 + H4 multi-timeframe
-- Indicators: RSI, MACD, EMA, BB, ATR, Stochastic, ADX
-- ML model scoring (optional)
+Signal Engine v2 — Twelve Data API
+- Free tier: 800 requests/day, 8 req/min
+- Endpoint: /time_series for OHLCV
+- Supports all major/minor forex pairs and XAU/XAG
 """
 
 import asyncio
@@ -17,33 +15,17 @@ import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-# Finnhub forex symbol format: "OANDA:EUR_USD"
-FINNHUB_SYMBOLS = {
-    "EURUSD": "OANDA:EUR_USD",
-    "GBPUSD": "OANDA:GBP_USD",
-    "USDJPY": "OANDA:USD_JPY",
-    "USDCHF": "OANDA:USD_CHF",
-    "AUDUSD": "OANDA:AUD_USD",
-    "USDCAD": "OANDA:USD_CAD",
-    "NZDUSD": "OANDA:NZD_USD",
-    "EURGBP": "OANDA:EUR_GBP",
-    "EURJPY": "OANDA:EUR_JPY",
-    "GBPJPY": "OANDA:GBP_JPY",
-    "AUDJPY": "OANDA:AUD_JPY",
-    "CADJPY": "OANDA:CAD_JPY",
-    "CHFJPY": "OANDA:CHF_JPY",
-    "EURCHF": "OANDA:EUR_CHF",
-    "EURAUD": "OANDA:EUR_AUD",
-    "EURCAD": "OANDA:EUR_CAD",
-    "GBPAUD": "OANDA:GBP_AUD",
-    "GBPCAD": "OANDA:GBP_CAD",
-    "GBPCHF": "OANDA:GBP_CHF",
-    "AUDCAD": "OANDA:AUD_CAD",
-    "AUDCHF": "OANDA:AUD_CHF",
-    "AUDNZD": "OANDA:AUD_NZD",
-    "NZDJPY": "OANDA:NZD_JPY",
-    "XAUUSD": "OANDA:XAU_USD",
-    "XAGUSD": "OANDA:XAG_USD",
+# Twelve Data symbol format: "EUR/USD"
+TD_SYMBOLS = {
+    "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY",
+    "USDCHF": "USD/CHF", "AUDUSD": "AUD/USD", "USDCAD": "USD/CAD",
+    "NZDUSD": "NZD/USD", "EURGBP": "EUR/GBP", "EURJPY": "EUR/JPY",
+    "GBPJPY": "GBP/JPY", "AUDJPY": "AUD/JPY", "CADJPY": "CAD/JPY",
+    "CHFJPY": "CHF/JPY", "EURCHF": "EUR/CHF", "EURAUD": "EUR/AUD",
+    "EURCAD": "EUR/CAD", "GBPAUD": "GBP/AUD", "GBPCAD": "GBP/CAD",
+    "GBPCHF": "GBP/CHF", "AUDCAD": "AUD/CAD", "AUDCHF": "AUD/CHF",
+    "AUDNZD": "AUD/NZD", "NZDJPY": "NZD/JPY",
+    "XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD",
 }
 
 DISPLAY_NAMES = {
@@ -88,40 +70,33 @@ SESSIONS = {
 
 class SignalEngine:
     def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = "https://finnhub.io/api/v1"
+        self.api_key  = api_key
+        self.base_url = "https://api.twelvedata.com"
         self.ml_model = self._load_ml_model()
 
     # ── Data Fetching ─────────────────────────────────────────────────────────
 
-    async def fetch_ohlcv(self, pair: str, resolution: str = "60") -> Optional[pd.DataFrame]:
+    async def fetch_ohlcv(self, pair: str, interval: str = "1h", outputsize: int = 100) -> Optional[pd.DataFrame]:
         """
-        Fetch OHLCV from Finnhub forex/candle endpoint.
-        resolution: "60" = H1, "240" = H4 (in minutes)
-        Returns last 100 candles.
+        Fetch OHLCV from Twelve Data /time_series endpoint.
+        interval: "1h" = H1, "4h" = H4
         """
-        symbol = FINNHUB_SYMBOLS.get(pair)
+        symbol = TD_SYMBOLS.get(pair)
         if not symbol:
             return None
 
-        now   = int(time.time())
-        # Fetch enough history: 100 candles back
-        # H1 = 100 hours, H4 = 400 hours
-        hours_back = 100 if resolution == "60" else 400
-        from_ts = now - (hours_back * 3600)
-
         params = {
             "symbol":     symbol,
-            "resolution": resolution,
-            "from":       from_ts,
-            "to":         now,
-            "token":      self.api_key,
+            "interval":   interval,
+            "outputsize": outputsize,
+            "apikey":     self.api_key,
+            "format":     "JSON",
         }
 
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{self.base_url}/forex/candle",
+                    f"{self.base_url}/time_series",
                     params=params,
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
@@ -129,57 +104,34 @@ class SignalEngine:
         except Exception as e:
             return None
 
-        status = data.get("s")
-        if status == "no_data":
-            # Symbol might need IC MARKETS prefix instead of OANDA
-            return await self._fetch_with_icmarkets(pair, resolution, now, from_ts)
-        if status != "ok" or not data.get("c"):
+        # Check for errors
+        if data.get("status") == "error":
             return None
 
-        df = pd.DataFrame({
-            "time":  pd.to_datetime(data["t"], unit="s"),
-            "open":  data["o"],
-            "high":  data["h"],
-            "low":   data["l"],
-            "close": data["c"],
-        })
-        return df.sort_values("time").reset_index(drop=True)
+        values = data.get("values")
+        if not values:
+            return None
 
-    async def _fetch_with_icmarkets(self, pair: str, resolution: str, now: int, from_ts: int) -> Optional[pd.DataFrame]:
-        """Fallback: try IC MARKETS symbol prefix if OANDA returns no_data."""
-        # IC Markets uses different symbol format
-        base = pair[:3]; quote = pair[3:]
-        symbol = f"IC MARKETS:{base}/{quote}"
-        params = {
-            "symbol":     symbol,
-            "resolution": resolution,
-            "from":       from_ts,
-            "to":         now,
-            "token":      self.api_key,
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{self.base_url}/forex/candle",
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as resp:
-                    data = await resp.json()
-            if data.get("s") == "ok" and data.get("c"):
-                df = pd.DataFrame({
-                    "time":  pd.to_datetime(data["t"], unit="s"),
-                    "open":  data["o"],
-                    "high":  data["h"],
-                    "low":   data["l"],
-                    "close": data["c"],
+        records = []
+        for v in values:
+            try:
+                records.append({
+                    "time":  pd.to_datetime(v["datetime"]),
+                    "open":  float(v["open"]),
+                    "high":  float(v["high"]),
+                    "low":   float(v["low"]),
+                    "close": float(v["close"]),
                 })
-                return df.sort_values("time").reset_index(drop=True)
-        except Exception:
-            pass
-        return None
+            except Exception:
+                continue
+
+        if not records:
+            return None
+
+        df = pd.DataFrame(records).sort_values("time").reset_index(drop=True)
+        return df
 
     async def _resample_to_h4(self, df_h1: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """Resample H1 dataframe into H4 candles."""
         if df_h1 is None or len(df_h1) < 8:
             return None
         df = df_h1.set_index("time")
@@ -244,15 +196,13 @@ class SignalEngine:
         dx    = 100 * (pdi - ndi).abs() / (pdi + ndi + 1e-9)
         return dx.ewm(span=p, adjust=False).mean()
 
-    # ── Session Filter ────────────────────────────────────────────────────────
+    # ── Session / H4 / ML ─────────────────────────────────────────────────────
 
     @staticmethod
     def in_trading_session() -> Tuple[bool, str]:
         hour   = datetime.now(timezone.utc).hour
         active = [n for n, (s, e) in SESSIONS.items() if s <= hour < e]
         return (True, " + ".join(active)) if active else (False, "Asian (low liquidity)")
-
-    # ── H4 Trend ──────────────────────────────────────────────────────────────
 
     def h4_trend(self, df_h4: Optional[pd.DataFrame]) -> str:
         if df_h4 is None or len(df_h4) < 55:
@@ -264,8 +214,6 @@ class SignalEngine:
         if price > e20 > e50:   return "BULL"
         elif price < e20 < e50: return "BEAR"
         return "NEUTRAL"
-
-    # ── ML ────────────────────────────────────────────────────────────────────
 
     def _load_ml_model(self):
         path = os.path.join(os.path.dirname(__file__), "ml_model.pkl")
@@ -305,65 +253,56 @@ class SignalEngine:
         stk, _            = self.stochastic(df_h1)
         adx_s             = self.adx(df_h1)
 
-        rsi_v       = rsi_s.iloc[-1]
-        mhist_v     = macd_hist_s.iloc[-1]
-        mhist_prev  = macd_hist_s.iloc[-2]
-        bb_range    = bb_up.iloc[-1] - bb_lo.iloc[-1]
-        bb_pos      = (price - bb_lo.iloc[-1]) / bb_range if bb_range > 0 else 0.5
+        rsi_v      = rsi_s.iloc[-1]
+        mhist_v    = macd_hist_s.iloc[-1]
+        mhist_prev = macd_hist_s.iloc[-2]
+        bb_range   = bb_up.iloc[-1] - bb_lo.iloc[-1]
+        bb_pos     = (price - bb_lo.iloc[-1]) / bb_range if bb_range > 0 else 0.5
         e9_v, e21_v, e50_v = e9.iloc[-1], e21.iloc[-1], e50.iloc[-1]
-        e9_p, e21_p        = e9.iloc[-2],  e21.iloc[-2]
-        atr_v       = atr_s.iloc[-1]
-        stk_v       = stk.iloc[-1]
-        adx_v       = adx_s.iloc[-1]
+        e9_p, e21_p        = e9.iloc[-2], e21.iloc[-2]
+        atr_v      = atr_s.iloc[-1]
+        stk_v      = stk.iloc[-1]
+        adx_v      = adx_s.iloc[-1]
 
-        trend_h4             = self.h4_trend(df_h4)
+        trend_h4              = self.h4_trend(df_h4)
         in_session, sess_name = self.in_trading_session()
 
-        # ── Score ──────────────────────────────────────────────────────────
         score = 0; max_score = 0
 
         def add(val, w):
             nonlocal score, max_score
             score += val * w; max_score += w
 
-        # RSI
         rsi_lbl = ("🟢 Oversold" if rsi_v < 30 else "🟡 Below mid" if rsi_v < 45
                    else "🔴 Overbought" if rsi_v > 70 else "🟡 Above mid")
         add(+2 if rsi_v < 30 else +1 if rsi_v < 45 else -2 if rsi_v > 70 else -1 if rsi_v > 55 else 0, 2)
 
-        # MACD
         if mhist_v > 0 and mhist_prev <= 0:   macd_lbl = "🟢 Bull crossover"; add(+3, 3)
         elif mhist_v < 0 and mhist_prev >= 0: macd_lbl = "🔴 Bear crossover"; add(-3, 3)
         elif mhist_v > 0:                      macd_lbl = "🟢 Bullish";        add(+1, 3)
         else:                                  macd_lbl = "🔴 Bearish";        add(-1, 3)
 
-        # EMA
         if   e9_v > e21_v and e9_p <= e21_p:  ema_lbl = "🟢 Golden cross";   add(+2, 2)
         elif e9_v < e21_v and e9_p >= e21_p:  ema_lbl = "🔴 Death cross";    add(-2, 2)
         elif e9_v > e21_v > e50_v:            ema_lbl = "🟢 Bull alignment"; add(+1, 2)
         elif e9_v < e21_v < e50_v:            ema_lbl = "🔴 Bear alignment"; add(-1, 2)
         else:                                  ema_lbl = "🟡 Mixed";           add(0,  2)
 
-        # BB
         if   bb_pos < 0.15: bb_lbl = "🟢 Lower band"; add(+1, 1)
         elif bb_pos > 0.85: bb_lbl = "🔴 Upper band"; add(-1, 1)
         else:               bb_lbl = f"🟡 Mid {bb_pos:.0%}"; add(0, 1)
 
-        # Stoch
         if   stk_v < 20: stoch_lbl = "🟢 Oversold";   add(+1, 1)
         elif stk_v > 80: stoch_lbl = "🔴 Overbought"; add(-1, 1)
         else:            stoch_lbl = f"🟡 {stk_v:.0f}"; add(0, 1)
 
-        # ADX boost
         adx_lbl = f"{'Strong' if adx_v > 25 else 'Weak'} ({adx_v:.0f})"
         if adx_v > 25: score *= 1.2
 
-        # H4 trend (weight 4)
         h4_map = {"BULL": (+1,"🟢 Bullish"), "BEAR": (-1,"🔴 Bearish"), "NEUTRAL": (0,"🟡 Neutral")}
         h4_score, h4_lbl = h4_map[trend_h4]
         add(h4_score * 4, 4)
 
-        # Session multiplier
         score *= 1.15 if in_session else 0.70
 
         direction   = "BUY" if score > 0 else "SELL"
@@ -374,7 +313,6 @@ class SignalEngine:
         raw_conf = max(raw_conf, 40)
         if h4_conflict: raw_conf *= 0.5
 
-        # ML blend
         ml_feats = {
             "rsi": rsi_v, "macd_hist": mhist_v, "bb_pos": bb_pos,
             "ema_diff": (e9_v - e21_v) / price, "atr_norm": atr_v / price,
@@ -384,7 +322,6 @@ class SignalEngine:
         ml_conf    = self.ml_confidence(ml_feats)
         final_conf = round((ml_conf * 0.5 + raw_conf * 0.5) if ml_conf else raw_conf, 1)
 
-        # SL / TP
         pip     = PIP_SIZE[pair]
         sl_dist = max(SL_PIPS[pair] * pip, atr_v * 1.2)
         rr1, rr2 = 1.5, 2.5
@@ -398,7 +335,6 @@ class SignalEngine:
             tp1 = round(price - sl_dist * rr1, 5)
             tp2 = round(price - sl_dist * rr2, 5)
 
-        # Quality
         if final_conf >= 75 and in_session and not h4_conflict: quality = "⭐⭐⭐ HIGH"
         elif final_conf >= 60 and not h4_conflict:              quality = "⭐⭐ MEDIUM"
         elif h4_conflict:                                        quality = "⚠️ LOW — H4 conflict"
@@ -423,14 +359,10 @@ class SignalEngine:
 
     async def get_signal(self, pair: str) -> dict:
         try:
-            # Fetch H1 and H4 concurrently — Finnhub supports 60 req/min, no delay needed
-            df_h1, df_h4_raw = await asyncio.gather(
-                self.fetch_ohlcv(pair, "60"),
-                self.fetch_ohlcv(pair, "60"),  # fetch extra H1 to resample as H4
-            )
+            df_h1 = await self.fetch_ohlcv(pair, "1h", 100)
             if df_h1 is None or len(df_h1) < 30:
-                return self._error_signal(pair, "No data from Finnhub. Check API key.")
-            df_h4 = await self._resample_to_h4(df_h4_raw)
+                return self._error_signal(pair, "No data from Twelve Data. Check API key at twelvedata.com")
+            df_h4 = await self._resample_to_h4(df_h1)
             return self.analyze(df_h1, df_h4, pair)
         except Exception as e:
             return self._error_signal(pair, str(e))
