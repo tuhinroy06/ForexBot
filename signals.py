@@ -68,6 +68,10 @@ SESSIONS = {
 }
 
 
+# Simple in-memory cache: {"EURUSD_1h": (timestamp, dataframe)}
+_cache: dict = {}
+CACHE_TTL = 300  # 5 minutes
+
 class SignalEngine:
     def __init__(self, api_key: str):
         self.api_key  = api_key
@@ -78,9 +82,19 @@ class SignalEngine:
 
     async def fetch_ohlcv(self, pair: str, interval: str = "1h", outputsize: int = 100) -> Optional[pd.DataFrame]:
         """
-        Fetch OHLCV from Twelve Data /time_series endpoint.
-        interval: "1h" = H1, "4h" = H4
+        Fetch OHLCV from Twelve Data /time_series endpoint with caching.
+        Cache TTL = 5 minutes to avoid duplicate data across pairs.
         """
+        import time as _time
+        cache_key = f"{pair}_{interval}"
+        now_ts    = _time.time()
+
+        # Return cached data if fresh
+        if cache_key in _cache:
+            cached_ts, cached_df = _cache[cache_key]
+            if now_ts - cached_ts < CACHE_TTL:
+                return cached_df.copy()
+
         symbol = TD_SYMBOLS.get(pair)
         if not symbol:
             return None
@@ -104,8 +118,14 @@ class SignalEngine:
         except Exception as e:
             return None
 
-        # Check for errors
+        # Check for API errors
         if data.get("status") == "error":
+            code = data.get("code", "")
+            # Rate limited — return cached data if available even if stale
+            if code in (429, "429"):
+                if cache_key in _cache:
+                    _, cached_df = _cache[cache_key]
+                    return cached_df.copy()
             return None
 
         values = data.get("values")
@@ -129,7 +149,10 @@ class SignalEngine:
             return None
 
         df = pd.DataFrame(records).sort_values("time").reset_index(drop=True)
-        return df
+
+        # Store in cache with timestamp
+        _cache[cache_key] = (_time.time(), df)
+        return df.copy()
 
     async def _resample_to_h4(self, df_h1: pd.DataFrame) -> Optional[pd.DataFrame]:
         if df_h1 is None or len(df_h1) < 8:
@@ -309,8 +332,10 @@ class SignalEngine:
         h4_conflict = (direction == "BUY" and trend_h4 == "BEAR") or \
                       (direction == "SELL" and trend_h4 == "BULL")
 
-        raw_conf = min(abs(score) / max_score * 100, 95) if max_score > 0 else 50
-        raw_conf = max(raw_conf, 20)  # low floor so weak signals show real score
+        # Normalize score to 0-100 range
+        # max possible score = 2+3+2+1+1+4 = 13, times boosts ~16
+        raw_conf = min((abs(score) / 16) * 100, 88) if max_score > 0 else 30
+        raw_conf = max(raw_conf, 20)
         if h4_conflict: raw_conf *= 0.5
 
         ml_feats = {
