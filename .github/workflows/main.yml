@@ -2,13 +2,13 @@ name: Run Forex Bot 24/7
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'   # every 10 min = 4320 min/month, fits in free tier
   workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
@@ -26,5 +26,5 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: timeout 270 python app.py || true
-        # 270 seconds = 4.5 min, cron fires every 5 min = no gap
+        run: timeout 570 python app.py || true
+        # 570 seconds = 9.5 min, cron fires every 10 min = no gap
