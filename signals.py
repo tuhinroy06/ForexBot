@@ -359,14 +359,13 @@ class SignalEngine:
 
     async def get_signal(self, pair: str) -> dict:
         try:
-            # Fetch H1 and H4 concurrently from Twelve Data
-            df_h1, df_h4 = await asyncio.gather(
-                self.fetch_ohlcv(pair, "1h",  100),
-                self.fetch_ohlcv(pair, "4h",  100),
-            )
+            # Fetch H1 first, then H4 with small delay to respect rate limits
+            df_h1 = await self.fetch_ohlcv(pair, "1h", 100)
+            await asyncio.sleep(8)  # 8s gap = max 7-8 req/min safely
+            df_h4 = await self.fetch_ohlcv(pair, "4h", 100)
+
             if df_h1 is None or len(df_h1) < 30:
-                return self._error_signal(pair, "No data from Twelve Data. Check API key at twelvedata.com")
-            # If H4 fetch failed, fallback to resampling H1
+                return self._error_signal(pair, "No data from Twelve Data. Check API key.")
             if df_h4 is None or len(df_h4) < 10:
                 df_h4 = await self._resample_to_h4(df_h1)
             return self.analyze(df_h1, df_h4, pair)
