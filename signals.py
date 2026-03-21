@@ -310,7 +310,7 @@ class SignalEngine:
                       (direction == "SELL" and trend_h4 == "BULL")
 
         raw_conf = min(abs(score) / max_score * 100, 95) if max_score > 0 else 50
-        raw_conf = max(raw_conf, 40)
+        raw_conf = max(raw_conf, 20)  # low floor so weak signals show real score
         if h4_conflict: raw_conf *= 0.5
 
         ml_feats = {
@@ -359,10 +359,16 @@ class SignalEngine:
 
     async def get_signal(self, pair: str) -> dict:
         try:
-            df_h1 = await self.fetch_ohlcv(pair, "1h", 100)
+            # Fetch H1 and H4 concurrently from Twelve Data
+            df_h1, df_h4 = await asyncio.gather(
+                self.fetch_ohlcv(pair, "1h",  100),
+                self.fetch_ohlcv(pair, "4h",  100),
+            )
             if df_h1 is None or len(df_h1) < 30:
                 return self._error_signal(pair, "No data from Twelve Data. Check API key at twelvedata.com")
-            df_h4 = await self._resample_to_h4(df_h1)
+            # If H4 fetch failed, fallback to resampling H1
+            if df_h4 is None or len(df_h4) < 10:
+                df_h4 = await self._resample_to_h4(df_h1)
             return self.analyze(df_h1, df_h4, pair)
         except Exception as e:
             return self._error_signal(pair, str(e))
