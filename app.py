@@ -90,7 +90,10 @@ async def safe_send(send_fn, text: str, **kwargs):
 
 
 async def send_signals(send_fn, pairs: list):
-    for pair in pairs:
+    """Send signals one by one. 8s delay inside get_signal respects TD rate limits."""
+    for i, pair in enumerate(pairs):
+        if i > 0:
+            await send_fn(f"⏳ Fetching {pair}... ({i+1}/{len(pairs)})")
         result = await signal_engine.get_signal(pair)
         await safe_send(send_fn, format_signal(result), parse_mode="Markdown")
 
@@ -102,7 +105,6 @@ async def get_best_picks(pairs: list, top_n: int = 3) -> list:
         result = await signal_engine.get_signal(pair)
         if result["direction"] != "N/A" and "LOW" not in result.get("quality", ""):
             results.append(result)
-    # Sort by confidence descending
     results.sort(key=lambda x: x["confidence"], reverse=True)
     return results[:top_n]
 
@@ -112,12 +114,41 @@ async def get_best_picks(pairs: list, top_n: int = 3) -> list:
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 All Signals",    callback_data="signals_all")],
-        [InlineKeyboardButton("💱 Majors",          callback_data="signals_majors"),
-         InlineKeyboardButton("🔀 Minors",          callback_data="signals_minors")],
-        [InlineKeyboardButton("🥇 Commodities",     callback_data="signals_commodities")],
+        [InlineKeyboardButton("💱 Majors",          callback_data="menu_majors"),
+         InlineKeyboardButton("🔀 Minors",          callback_data="menu_minors")],
+        [InlineKeyboardButton("🥇 Commodities",     callback_data="menu_commodities")],
         [InlineKeyboardButton("🏆 Best Picks Now",  callback_data="bestpicks")],
         [InlineKeyboardButton("📰 News",            callback_data="news"),
          InlineKeyboardButton("ℹ️ Help",            callback_data="help")],
+    ])
+
+def majors_keyboard():
+    pairs = ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","USDCAD","NZDUSD"]
+    rows  = [[InlineKeyboardButton(p[:3]+"/"+p[3:], callback_data=f"signal_{p}")] for p in pairs]
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="back_main"),
+                 InlineKeyboardButton("📊 All Majors", callback_data="signals_majors")])
+    return InlineKeyboardMarkup(rows)
+
+def minors_keyboard():
+    pairs = ["EURGBP","EURJPY","GBPJPY","AUDJPY","CADJPY","CHFJPY",
+             "EURCHF","EURAUD","EURCAD","GBPAUD","GBPCAD","GBPCHF",
+             "AUDCAD","AUDCHF","AUDNZD","NZDJPY"]
+    rows = []
+    for i in range(0, len(pairs), 2):
+        row = []
+        for p in pairs[i:i+2]:
+            row.append(InlineKeyboardButton(p[:3]+"/"+p[3:], callback_data=f"signal_{p}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="back_main"),
+                 InlineKeyboardButton("📊 All Minors", callback_data="signals_minors")])
+    return InlineKeyboardMarkup(rows)
+
+def commodities_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🥇 XAU/USD (Gold)",   callback_data="signal_XAUUSD")],
+        [InlineKeyboardButton("🥈 XAG/USD (Silver)",  callback_data="signal_XAGUSD")],
+        [InlineKeyboardButton("📊 Both",              callback_data="signals_commodities")],
+        [InlineKeyboardButton("🔙 Back",              callback_data="back_main")],
     ])
 
 
@@ -288,7 +319,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def send(text, **kw):
         return context.bot.send_message(chat_id=chat_id, text=text, **kw)
 
-    if data == "signals_all":
+    if data == "back_main":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🤖 *Main Menu* — Select an option:",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+
+    elif data == "menu_majors":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="💱 *Major Pairs* — Select a pair:",
+            parse_mode="Markdown",
+            reply_markup=majors_keyboard()
+        )
+
+    elif data == "menu_minors":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🔀 *Minor Pairs* — Select a pair:",
+            parse_mode="Markdown",
+            reply_markup=minors_keyboard()
+        )
+
+    elif data == "menu_commodities":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🥇 *Commodities* — Select a pair:",
+            parse_mode="Markdown",
+            reply_markup=commodities_keyboard()
+        )
+
+    elif data == "signals_all":
         await send("⏳ Scanning all 25 pairs...")
         await send_signals(send, PAIRS)
 
