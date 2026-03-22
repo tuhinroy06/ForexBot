@@ -13,8 +13,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from signals import SignalEngine, ScalpingEngine, ArbitrageEngine
 from propfirm import (dd_tracker, get_data, save_data, get_news_blackout,
                        calculate_lot_size, log_signal, get_journal_text)
-from propfirm import (DrawdownTracker, PositionSizer, NewsFilter,
-                       TradeJournal, load_account, save_account, default_account)
 from news import NewsEngine
 from config import Config
 
