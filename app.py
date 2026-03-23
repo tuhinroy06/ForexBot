@@ -304,16 +304,13 @@ def main_keyboard():
         [InlineKeyboardButton("📊 All Signals",    callback_data="signals_all")],
         [InlineKeyboardButton("💱 Majors",          callback_data="menu_majors"),
          InlineKeyboardButton("🔀 Minors",          callback_data="menu_minors")],
-        [InlineKeyboardButton("🥇 Commodities",     callback_data="menu_commodities")],
-        [InlineKeyboardButton("🏆 Best Picks Now",  callback_data="bestpicks")],
-        [InlineKeyboardButton("⚡ Scalp Signal",      callback_data="menu_scalp"),
-         InlineKeyboardButton("🔄 Arbitrage",          callback_data="arb")],
+        [InlineKeyboardButton("🥇 Commodities",     callback_data="menu_commodities"),
+         InlineKeyboardButton("🏆 Best Picks",      callback_data="bestpicks")],
+        [InlineKeyboardButton("⚡ Scalp",            callback_data="menu_scalp"),
+         InlineKeyboardButton("🔄 Arbitrage",        callback_data="arb")],
         [InlineKeyboardButton("🛡️ Prop Firm",       callback_data="menu_propfirm"),
-         InlineKeyboardButton("📓 Journal",          callback_data="journal")],
-        [InlineKeyboardButton("📰 News",            callback_data="news"),
-         InlineKeyboardButton("ℹ️ Help",            callback_data="help")],
-        [InlineKeyboardButton("📊 Dashboard",         callback_data="dashboard"),
-         InlineKeyboardButton("📓 Journal",           callback_data="journal")],
+         InlineKeyboardButton("📰 News",             callback_data="news")],
+        [InlineKeyboardButton("ℹ️ Help",            callback_data="help")],
     ])
 
 def majors_keyboard():
@@ -373,8 +370,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/minors — Minor crosses\n"
         "/commodities — Gold & Silver\n"
         "/bestpicks — Top 3 signals right now\n"
-        "/subscribe\\_bestpicks 4 — Auto best picks every 4 hrs\n"
-        "/unsubscribe\\_bestpicks — Stop auto best picks\n"
+        "/subscribe\\\_bestpicks 4 — Auto best picks every 4 hrs\n"
+        "/unsubscribe\\\_bestpicks — Stop auto best picks\n"
         "/subscribe — Hourly all signals\n"
         "/unsubscribe — Stop hourly signals\n"
         "/news — Economic calendar\n\n"
@@ -850,7 +847,7 @@ async def subscribe_bestpicks_command(update: Update, context: ContextTypes.DEFA
         f"✅ *Best Picks Subscribed!*\n\n"
         f"You'll receive the top 3 highest confidence signals every *{hours} hour(s)*.\n"
         f"Only HIGH and MEDIUM quality signals are included.\n\n"
-        f"Use /unsubscribe\\_bestpicks to stop.",
+        f"Use /unsubscribe\\\_bestpicks to stop.",
         parse_mode="Markdown",
     )
 
@@ -877,6 +874,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def send(text, **kw):
         return context.bot.send_message(chat_id=chat_id, text=text, **kw)
 
+    # ── Navigation ────────────────────────────────────────────────────────────
     if data == "back_main":
         await context.bot.send_message(
             chat_id=chat_id,
@@ -909,6 +907,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=commodities_keyboard()
         )
 
+    elif data == "menu_scalp":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚡ *Scalp Signal* — Select pair:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("EUR/USD", callback_data="scalp_EURUSD"),
+                 InlineKeyboardButton("GBP/USD", callback_data="scalp_GBPUSD")],
+                [InlineKeyboardButton("USD/JPY", callback_data="scalp_USDJPY"),
+                 InlineKeyboardButton("XAU/USD", callback_data="scalp_XAUUSD")],
+                [InlineKeyboardButton("AUD/USD", callback_data="scalp_AUDUSD"),
+                 InlineKeyboardButton("GBP/JPY", callback_data="scalp_GBPJPY")],
+                [InlineKeyboardButton("🔙 Back",  callback_data="back_main")],
+            ])
+        )
+
+    elif data == "menu_propfirm":
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🛡️ *Prop Firm Tools*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 Dashboard",    callback_data="dashboard")],
+                [InlineKeyboardButton("📓 Journal",      callback_data="journal")],
+                [InlineKeyboardButton("🔙 Back",         callback_data="back_main")],
+            ])
+        )
+
+    # ── Signals ───────────────────────────────────────────────────────────────
     elif data == "signals_all":
         await send("⏳ Scanning all 25 pairs...")
         await send_signals(send, PAIRS)
@@ -925,66 +952,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send("⏳ Scanning commodities...")
         await send_signals(send, COMMODITIES)
 
-    elif data == "menu_scalp":
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="⚡ *Scalp Signal* — Select pair:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("EUR/USD", callback_data="scalp_EURUSD"),
-                 InlineKeyboardButton("GBP/USD", callback_data="scalp_GBPUSD")],
-                [InlineKeyboardButton("USD/JPY", callback_data="scalp_USDJPY"),
-                 InlineKeyboardButton("XAU/USD", callback_data="scalp_XAUUSD")],
-                [InlineKeyboardButton("AUD/USD", callback_data="scalp_AUDUSD"),
-                 InlineKeyboardButton("GBP/JPY", callback_data="scalp_GBPJPY")],
-                [InlineKeyboardButton("🔙 Back", callback_data="back_main")],
-            ])
-        )
+    elif data.startswith("signal_"):
+        pair = data.replace("signal_", "")
+        await send(f"⏳ Analyzing {pair}...")
+        # Prop firm checks
+        pf_data = get_data()
+        limits  = dd_tracker.check_limits(pf_data)
+        if not limits["allowed"]:
+            await send("🛡️ *Trading Halted*\n\n" + limits["reason"], parse_mode="Markdown")
+            return
+        blackout = await get_news_blackout(pair)
+        if blackout["blocked"]:
+            await send("📰 *News Blackout*\n\n" + blackout["reason"] + "\nResumes: " + blackout["next_clear"], parse_mode="Markdown")
+            return
+        result = await signal_engine.get_signal(pair)
+        if result["direction"] != "N/A":
+            acc = pf_data["account"]
+            ls  = calculate_lot_size(pair, result["entry"], result["sl"], acc["balance"], acc["risk_per_trade"])
+            result["lot_size"]    = ls["lot_size"]
+            result["risk_amount"] = ls["risk_amount"]
+            result["sl_pips"]     = ls["sl_pips"]
+            log_signal(pair, result["direction"], result["entry"], result["sl"],
+                       result["tp1"], result["tp2"], result["confidence"], ls["lot_size"])
+        await safe_send(send, format_signal(result), parse_mode="Markdown")
 
+    # ── Scalp ─────────────────────────────────────────────────────────────────
     elif data.startswith("scalp_"):
         pair = data.replace("scalp_", "")
         await send(f"⚡ Analyzing {pair} M5+M15 scalp...")
         result = await scalp_engine.get_scalp_signal(pair)
         await safe_send(send, format_scalp(result), parse_mode="Markdown")
 
-    elif data == "menu_propfirm":
-        propfirm_text = (
-            "🛡️ *Prop Firm Suite*\n\n"
-            "Commands:\n"
-            "`/propfirm` — view/setup account\n"
-            "`/status` — quick status check\n"
-            "`/journal` — full trade journal\n"
-            "`/logtrade` — log a trade\n\n"
-            "Example setup:\n"
-            "`/propfirm balance 10000`\n"
-            "`/propfirm firm FTMO`\n"
-            "`/propfirm target 10`\n"
-            "`/propfirm dailydd 5`\n"
-            "`/propfirm totaldd 10`\n"
-            "`/propfirm risk 1`"
-        )
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=propfirm_text,
-            parse_mode="Markdown",
-        )
-
-    elif data == "journal":
-        account = load_account(chat_id)
-        account = DrawdownTracker.reset_daily_if_needed(account)
-        summary = TradeJournal.summary(account)
-        await safe_send(send, summary, parse_mode="Markdown")
-
+    # ── Arbitrage ─────────────────────────────────────────────────────────────
     elif data == "arb":
         await send("🔄 Scanning arbitrage opportunities...")
         opps = await arb_engine.scan_all()
         if not opps:
-            await send("🔄 No arbitrage opportunities right now. Z-score within normal range.")
+            await send("🔄 No arbitrage opportunities right now. Z-score within normal range. Try again in 30-60 min.")
         else:
             await send(f"🔄 *{len(opps)} Arbitrage Signal(s) Found*", parse_mode="Markdown")
             for opp in opps:
                 await safe_send(send, format_arb(opp), parse_mode="Markdown")
 
+    # ── Best Picks ────────────────────────────────────────────────────────────
     elif data == "bestpicks":
         await send("⏳ Scanning all pairs for best picks...")
         picks = await get_best_picks(PAIRS)
@@ -995,12 +1005,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, pick in enumerate(picks, 1):
             await safe_send(send, format_bestpick(pick, i), parse_mode="Markdown")
 
-    elif data.startswith("signal_"):
-        pair = data.replace("signal_", "")
-        await send(f"⏳ Analyzing {pair}...")
-        result = await signal_engine.get_signal(pair)
-        await safe_send(send, format_signal(result), parse_mode="Markdown")
+    # ── Prop Firm ─────────────────────────────────────────────────────────────
+    elif data == "dashboard":
+        await safe_send(send, dd_tracker.get_dashboard(), parse_mode="Markdown")
 
+    elif data == "journal":
+        await safe_send(send, get_journal_text(), parse_mode="Markdown")
+
+    # ── Info ──────────────────────────────────────────────────────────────────
     elif data == "news":
         await send("⏳ Fetching news...")
         text = await news_engine.get_forex_news()
@@ -1011,109 +1023,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⭐⭐⭐ HIGH   → H4 aligned + London/NY session\n"
             "⭐⭐ MEDIUM  → H4 aligned\n"
             "⚠️ LOW      → H4 conflict — skip\n\n"
-            "/subscribe\\_bestpicks 4 → auto best picks every 4 hrs\n"
+            "/subscribe\\_bestpicks 4 → best picks every 4hrs\n"
+            "/setup FTMO 10000 1000 500 1000 1 → prop firm setup\n"
             "Trade HIGH quality signals only."
         )
 
-
-# ── Scheduled Jobs ────────────────────────────────────────────────────────────
-
-async def auto_signal_job(context: ContextTypes.DEFAULT_TYPE):
-    """Hourly job — sends all HIGH/MEDIUM signals."""
-    chat_id = context.job.chat_id
-
-    def send(text, **kw):
-        return context.bot.send_message(chat_id=chat_id, text=text, **kw)
-
-    signals = []
-    for pair in PAIRS:
-        result = await signal_engine.get_signal(pair)
-        if "LOW" not in result.get("quality", "") and result["direction"] != "N/A":
-            signals.append(result)
-
-    if not signals:
-        await send("🔔 No HIGH/MEDIUM signals this hour. Market off-session or ranging.")
-        return
-
-    await send(f"🔔 *Hourly Update — {len(signals)} signals*", parse_mode="Markdown")
-    for result in signals:
-        await safe_send(send, format_signal(result), parse_mode="Markdown")
-
-
-async def best_picks_job(context: ContextTypes.DEFAULT_TYPE):
-    """Best picks job — sends top 3 highest confidence signals."""
-    chat_id = context.job.chat_id
-    hours   = context.job.data.get("hours", 4) if context.job.data else 4
-
-    def send(text, **kw):
-        return context.bot.send_message(chat_id=chat_id, text=text, **kw)
-
-    await send("🔍 Scanning all 25 pairs for best picks...")
-    picks = await get_best_picks(PAIRS, top_n=3)
-
-    if not picks:
-        await send(
-            "😴 *No Best Picks Available*\n\n"
-            "No HIGH/MEDIUM quality signals found.\n"
-            "Market is likely off-session or ranging.\n"
-            f"Next scan in {hours} hour(s).",
-            parse_mode="Markdown"
-        )
-        return
-
-    await send(
-        f"🏆 *Best Picks — Top {len(picks)} Signals*\n"
-        f"📅 {picks[0]['timestamp']}\n"
-        f"Next update in {hours} hour(s).",
-        parse_mode="Markdown"
-    )
-    for i, pick in enumerate(picks, 1):
-        await safe_send(send, format_bestpick(pick, i), parse_mode="Markdown")
-
-
-# ── Error Handler ─────────────────────────────────────────────────────────────
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Error: {context.error}")
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
-def main():
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start",                   start))
-    app.add_handler(CommandHandler("help",                    help_command))
-    app.add_handler(CommandHandler("signal",                  signal_command))
-    app.add_handler(CommandHandler("signals",                 signals_command))
-    app.add_handler(CommandHandler("majors",                  majors_command))
-    app.add_handler(CommandHandler("minors",                  minors_command))
-    app.add_handler(CommandHandler("commodities",             commodities_command))
-    app.add_handler(CommandHandler("bestpicks",               bestpicks_command))
-    app.add_handler(CommandHandler("scalp",                   scalp_command))
-    app.add_handler(CommandHandler("arb",                     arb_command))
-    app.add_handler(CommandHandler("subscribe_bestpicks",     subscribe_bestpicks_command))
-    app.add_handler(CommandHandler("unsubscribe_bestpicks",   unsubscribe_bestpicks_command))
-    app.add_handler(CommandHandler("subscribe",               subscribe_command))
-    app.add_handler(CommandHandler("unsubscribe",             unsubscribe_command))
-    app.add_handler(CommandHandler("propfirm",               propfirm_setup_command))
-    app.add_handler(CommandHandler("journal",                journal_command))
-    app.add_handler(CommandHandler("logtrade",               logtrade_command))
-    app.add_handler(CommandHandler("status",                 status_command))
-    app.add_handler(CommandHandler("news",                   news_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_error_handler(error_handler)
-
-    logger.info("Bot started. Connected to Telegram. Waiting for messages...")
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-        read_timeout=30,
-        write_timeout=30,
-        connect_timeout=30,
-        pool_timeout=30,
-    )
-
-
-if __name__ == "__main__":
-    main()
+    else:
+        await send(f"Unknown action: {data}")
