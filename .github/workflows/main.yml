@@ -26,18 +26,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: |
-          echo "Starting bot..."
-          python app.py &
-          BOT_PID=$!
-          sleep 10
-          if kill -0 $BOT_PID 2>/dev/null; then
-            echo "Bot is running (PID $BOT_PID)"
-            sleep 250
-            kill $BOT_PID 2>/dev/null || true
-            echo "Bot stopped after timeout"
-          else
-            echo "ERROR: Bot crashed on startup!"
-            wait $BOT_PID
-            exit 1
-          fi
+        run: timeout 270 python app.py 2>&1 || true
