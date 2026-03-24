@@ -5,14 +5,18 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
+# Prevent multiple instances running at the same time
+concurrency:
+  group: forex-bot
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 6
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -27,4 +31,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: python app.py 2>&1 || true
+        run: timeout 270 python app.py 2>&1 || true
