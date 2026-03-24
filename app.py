@@ -169,7 +169,6 @@ def format_arb(a: dict) -> str:
     return "\n".join(lines)
 
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def safe_send(send_fn, text: str, **kwargs):
@@ -200,7 +199,7 @@ async def get_best_picks(pairs: list, top_n: int = 3) -> list:
     return results[:top_n]
 
 
-# ── Prop Firm Safety Check ───────────────────────────────────────────────────
+# ── Prop Firm Safety Check ────────────────────────────────────────────────────
 
 async def get_news_events() -> list:
     """Get cached news events, refresh if older than 30 min."""
@@ -215,16 +214,11 @@ async def get_news_events() -> list:
 
 
 async def safety_check(chat_id: int, pair: str) -> tuple:
-    """
-    Run all prop firm safety checks before issuing a signal.
-    Returns (is_safe, warning_message)
-    """
     account = load_account(chat_id)
     account = DrawdownTracker.reset_daily_if_needed(account)
     account = DrawdownTracker.check_limits(account)
     save_account(chat_id, account)
 
-    # 1. Check account status
     if account["status"] == "DAILY_LIMIT":
         return False, (
             "🛑 *Daily Drawdown Limit Hit*\n\n"
@@ -244,12 +238,10 @@ async def safety_check(chat_id: int, pair: str) -> tuple:
             "Consider stopping or switching to conservative mode."
         )
 
-    # 2. Weekend check
     is_weekend, wk_reason = NewsFilter.is_weekend()
     if is_weekend:
         return False, f"*Weekend Filter*\n\n{wk_reason}"
 
-    # 3. News blackout check
     if pair and pair != "ALL":
         events = await get_news_events()
         is_blocked, news_reason = NewsFilter.is_blackout(events, pair)
@@ -260,14 +252,13 @@ async def safety_check(chat_id: int, pair: str) -> tuple:
 
 
 def format_signal_with_sizing(s: dict, chat_id: int) -> str:
-    """Add position sizing info to signal if account is configured."""
     account = load_account(chat_id)
     if s["direction"] == "N/A" or s["entry"] == "N/A":
         return format_signal(s)
 
     try:
         from signals import PIP_SIZE
-        sizing = PositionSizer.calculate(account, s["entry"], s["sl"], 
+        sizing = PositionSizer.calculate(account, s["entry"], s["sl"],
                                           list(PIP_SIZE.keys())[list(PIP_SIZE.values()).index(
                                               PIP_SIZE.get(s["pair"].replace("/",""), 0.0001)
                                           )])
@@ -278,11 +269,9 @@ def format_signal_with_sizing(s: dict, chat_id: int) -> str:
     except Exception:
         sizing_line = ""
 
-    # Check for upcoming news
     pair_key = s["pair"].replace("/", "")
     try:
-        import asyncio
-        events  = _news_events_cache
+        events   = _news_events_cache
         upcoming = NewsFilter.upcoming_events(events, pair_key)
         if upcoming:
             news_warn = "\n⚠️ *Upcoming News:*\n"
@@ -391,7 +380,6 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pair not in PAIRS:
         await update.message.reply_text(f"❌ Unknown pair: {pair}")
         return
-    # Check drawdown limits
     data   = get_data()
     limits = dd_tracker.check_limits(data)
     if not limits["allowed"]:
@@ -401,7 +389,6 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Check news blackout
     blackout = await get_news_blackout(pair)
     if blackout["blocked"]:
         await update.message.reply_text(
@@ -414,14 +401,13 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg    = await update.message.reply_text(f"⏳ Analyzing {pair}...")
     result = await signal_engine.get_signal(pair)
 
-    # Add lot size to signal
     if result["direction"] != "N/A":
         acc    = data["account"]
         ls     = calculate_lot_size(pair, result["entry"], result["sl"],
                                     acc["balance"], acc["risk_per_trade"])
-        result["lot_size"]   = ls["lot_size"]
+        result["lot_size"]    = ls["lot_size"]
         result["risk_amount"] = ls["risk_amount"]
-        result["sl_pips"]    = ls["sl_pips"]
+        result["sl_pips"]     = ls["sl_pips"]
         log_signal(pair, result["direction"], result["entry"], result["sl"],
                    result["tp1"], result["tp2"], result["confidence"], ls["lot_size"])
 
@@ -489,12 +475,11 @@ async def arb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def propfirm_setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Setup prop firm account parameters."""
     chat_id = update.effective_chat.id
     args    = context.args
 
     if not args:
-        account = load_account(chat_id)
+        account  = load_account(chat_id)
         balance  = account["balance"]
         initial  = account["initial_balance"]
         pnl_pct  = (balance - initial) / initial * 100
@@ -538,8 +523,8 @@ async def propfirm_setup_command(update: Update, context: ContextTypes.DEFAULT_T
     try:
         if cmd == "balance" and len(args) > 1:
             val = float(args[1])
-            account["balance"]         = val
-            account["initial_balance"] = val
+            account["balance"]             = val
+            account["initial_balance"]     = val
             account["daily_start_balance"] = val
             await update.message.reply_text(f"✅ Balance set to `${val:,.2f}`", parse_mode="Markdown")
         elif cmd == "target" and len(args) > 1:
@@ -572,16 +557,10 @@ async def propfirm_setup_command(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    account = load_account(chat_id)
-    account = DrawdownTracker.reset_daily_if_needed(account)
-    save_account(chat_id, account)
-    summary = TradeJournal.summary(account)
-    await safe_send(update.message.reply_text, summary, parse_mode="Markdown")
+    await update.message.reply_text(get_journal_text(), parse_mode="Markdown")
 
 
 async def logtrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Log a completed trade: /logtrade EURUSD BUY 1.0850 1.0900 0.1 TP"""
     chat_id = update.effective_chat.id
     args    = context.args
 
@@ -611,7 +590,8 @@ async def logtrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         save_account(chat_id, account)
 
-        pnl_pips = (exit_p - entry) / pip_size if direction == "BUY"                    else (entry - exit_p) / pip_size
+        pnl_pips = (exit_p - entry) / pip_size if direction == "BUY" \
+                   else (entry - exit_p) / pip_size
         pnl_usd  = round(pnl_pips * lots * 10, 2)
         emoji    = "✅" if pnl_usd > 0 else "❌"
 
@@ -623,13 +603,12 @@ async def logtrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Balance: `${bal_now:,.2f}`\n"
             f"Status: {status}"
         )
-        await update.message.reply_text(trade_msg, parse_mode="Markdown",)
+        await update.message.reply_text(trade_msg, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quick account status check."""
     chat_id = update.effective_chat.id
     account = load_account(chat_id)
     account = DrawdownTracker.reset_daily_if_needed(account)
@@ -644,13 +623,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_dd   = account["max_total_dd_pct"]
     target     = account["profit_target_pct"]
 
-    # Drawdown used
     daily_used = max(0, -daily_pnl / account["daily_start_balance"] * 100)
     total_used = max(0, -profit_pct)
 
-    # Weekend/news status
-    is_wk, wk_msg     = NewsFilter.is_weekend()
-    events            = await get_news_events()
+    is_wk, wk_msg = NewsFilter.is_weekend()
+    events        = await get_news_events()
 
     status_map = {
         "ACTIVE":      "✅ Active — OK to trade",
@@ -681,7 +658,6 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Setup prop firm parameters: /setup FTMO 10000 1000 500 1000 1"""
     usage = (
         "⚙️ *Setup Prop Firm*\n\n"
         "Usage: `/setup <firm> <balance> <profit_target> <daily_dd> <total_dd> <risk_pct>`\n\n"
@@ -696,12 +672,12 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(usage, parse_mode="Markdown")
         return
     try:
-        firm       = context.args[0]
-        balance    = float(context.args[1])
-        profit_t   = float(context.args[2])
-        daily_dd   = float(context.args[3])
-        total_dd   = float(context.args[4])
-        risk_pct   = float(context.args[5])
+        firm     = context.args[0]
+        balance  = float(context.args[1])
+        profit_t = float(context.args[2])
+        daily_dd = float(context.args[3])
+        total_dd = float(context.args[4])
+        risk_pct = float(context.args[5])
         data = get_data()
         data["account"].update({
             "firm": firm, "balance": balance, "starting": balance,
@@ -729,7 +705,6 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def lotsize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Calculate lot size: /lotsize EURUSD 1.0850 1.0830"""
     if not context.args or len(context.args) < 3:
         await update.message.reply_text(
             "Usage: `/lotsize PAIR ENTRY SL`\nExample: `/lotsize EURUSD 1.0850 1.0830`",
@@ -756,17 +731,17 @@ async def lotsize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"",
             f"Account Balance: `${acc['balance']:,.2f}`",
         ]
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown"
-        )
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except (ValueError, IndexError):
         await update.message.reply_text("❌ Invalid format. Use: /lotsize EURUSD 1.0850 1.0830")
 
 
 async def updatepnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Update PnL after trade closes: /updatepnl 150.50 or /updatepnl -75.00"""
     if not context.args:
-        await update.message.reply_text("Usage: `/updatepnl 150.50` or `/updatepnl -75.00`",
-                                         parse_mode="Markdown")
+        await update.message.reply_text(
+            "Usage: `/updatepnl 150.50` or `/updatepnl -75.00`",
+            parse_mode="Markdown"
+        )
         return
     try:
         pnl  = float(context.args[0])
@@ -780,15 +755,9 @@ async def updatepnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Status: {data['status']}\n\n"
             f"Use /dashboard to see full stats."
         )
-        await update.message.reply_text(msg,
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("❌ Invalid amount. Use: /updatepnl 150.50")
-
-
-async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(get_journal_text(), parse_mode="Markdown")
 
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -824,21 +793,19 @@ async def subscribe_bestpicks_command(update: Update, context: ContextTypes.DEFA
     chat_id  = update.effective_chat.id
     job_name = f"bestpicks_{chat_id}"
 
-    # Parse interval from args e.g. /subscribe_bestpicks 4
     try:
         hours = int(context.args[0]) if context.args else 4
-        hours = max(1, min(hours, 24))  # clamp between 1-24
+        hours = max(1, min(hours, 24))
     except (ValueError, IndexError):
         hours = 4
 
-    # Remove existing job if any
     for job in context.job_queue.get_jobs_by_name(job_name):
         job.schedule_removal()
 
     context.job_queue.run_repeating(
         best_picks_job,
         interval=hours * 3600,
-        first=30,  # first run 30 seconds after subscribing
+        first=30,
         chat_id=chat_id,
         name=job_name,
         data={"hours": hours},
@@ -874,7 +841,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def send(text, **kw):
         return context.bot.send_message(chat_id=chat_id, text=text, **kw)
 
-    # ── Navigation ────────────────────────────────────────────────────────────
     if data == "back_main":
         await context.bot.send_message(
             chat_id=chat_id,
@@ -935,7 +901,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
 
-    # ── Signals ───────────────────────────────────────────────────────────────
     elif data == "signals_all":
         await send("⏳ Scanning all 25 pairs...")
         await send_signals(send, PAIRS)
@@ -955,7 +920,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("signal_"):
         pair = data.replace("signal_", "")
         await send(f"⏳ Analyzing {pair}...")
-        # Prop firm checks
         pf_data = get_data()
         limits  = dd_tracker.check_limits(pf_data)
         if not limits["allowed"]:
@@ -963,12 +927,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         blackout = await get_news_blackout(pair)
         if blackout["blocked"]:
-            await send("📰 *News Blackout*\n\n" + blackout["reason"] + "\nResumes: " + blackout["next_clear"], parse_mode="Markdown")
+            await send(
+                "📰 *News Blackout*\n\n" + blackout["reason"] + "\nResumes: " + blackout["next_clear"],
+                parse_mode="Markdown"
+            )
             return
         result = await signal_engine.get_signal(pair)
         if result["direction"] != "N/A":
             acc = pf_data["account"]
-            ls  = calculate_lot_size(pair, result["entry"], result["sl"], acc["balance"], acc["risk_per_trade"])
+            ls  = calculate_lot_size(pair, result["entry"], result["sl"],
+                                     acc["balance"], acc["risk_per_trade"])
             result["lot_size"]    = ls["lot_size"]
             result["risk_amount"] = ls["risk_amount"]
             result["sl_pips"]     = ls["sl_pips"]
@@ -976,14 +944,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        result["tp1"], result["tp2"], result["confidence"], ls["lot_size"])
         await safe_send(send, format_signal(result), parse_mode="Markdown")
 
-    # ── Scalp ─────────────────────────────────────────────────────────────────
     elif data.startswith("scalp_"):
         pair = data.replace("scalp_", "")
         await send(f"⚡ Analyzing {pair} M5+M15 scalp...")
         result = await scalp_engine.get_scalp_signal(pair)
         await safe_send(send, format_scalp(result), parse_mode="Markdown")
 
-    # ── Arbitrage ─────────────────────────────────────────────────────────────
     elif data == "arb":
         await send("🔄 Scanning arbitrage opportunities...")
         opps = await arb_engine.scan_all()
@@ -994,7 +960,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for opp in opps:
                 await safe_send(send, format_arb(opp), parse_mode="Markdown")
 
-    # ── Best Picks ────────────────────────────────────────────────────────────
     elif data == "bestpicks":
         await send("⏳ Scanning all pairs for best picks...")
         picks = await get_best_picks(PAIRS)
@@ -1005,14 +970,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, pick in enumerate(picks, 1):
             await safe_send(send, format_bestpick(pick, i), parse_mode="Markdown")
 
-    # ── Prop Firm ─────────────────────────────────────────────────────────────
     elif data == "dashboard":
         await safe_send(send, dd_tracker.get_dashboard(), parse_mode="Markdown")
 
     elif data == "journal":
         await safe_send(send, get_journal_text(), parse_mode="Markdown")
 
-    # ── Info ──────────────────────────────────────────────────────────────────
     elif data == "news":
         await send("⏳ Fetching news...")
         text = await news_engine.get_forex_news()
@@ -1030,3 +993,89 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     else:
         await send(f"Unknown action: {data}")
+
+
+# ── Background Jobs ───────────────────────────────────────────────────────────
+
+async def auto_signal_job(context: ContextTypes.DEFAULT_TYPE):
+    """Hourly job: send best picks to subscribed users."""
+    picks = await get_best_picks(PAIRS)
+    if not picks:
+        return
+    await context.bot.send_message(
+        chat_id=context.job.chat_id,
+        text="🕐 *Hourly Best Picks*",
+        parse_mode="Markdown"
+    )
+    for i, pick in enumerate(picks, 1):
+        await context.bot.send_message(
+            chat_id=context.job.chat_id,
+            text=format_bestpick(pick, i),
+            parse_mode="Markdown"
+        )
+
+
+async def best_picks_job(context: ContextTypes.DEFAULT_TYPE):
+    """Scheduled best picks job (every N hours)."""
+    hours = context.job.data.get("hours", 4)
+    picks = await get_best_picks(PAIRS)
+    if not picks:
+        await context.bot.send_message(
+            chat_id=context.job.chat_id,
+            text="😴 No HIGH/MEDIUM signals right now. Try again later.",
+        )
+        return
+    await context.bot.send_message(
+        chat_id=context.job.chat_id,
+        text=f"🏆 *Best Picks (every {hours}h)*",
+        parse_mode="Markdown"
+    )
+    for i, pick in enumerate(picks, 1):
+        await context.bot.send_message(
+            chat_id=context.job.chat_id,
+            text=format_bestpick(pick, i),
+            parse_mode="Markdown"
+        )
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    app = (
+        Application.builder()
+        .token(config.TELEGRAM_BOT_TOKEN)
+        .build()
+    )
+
+    app.add_handler(CommandHandler("start",                 start))
+    app.add_handler(CommandHandler("help",                  help_command))
+    app.add_handler(CommandHandler("signal",                signal_command))
+    app.add_handler(CommandHandler("signals",               signals_command))
+    app.add_handler(CommandHandler("majors",                majors_command))
+    app.add_handler(CommandHandler("minors",                minors_command))
+    app.add_handler(CommandHandler("commodities",           commodities_command))
+    app.add_handler(CommandHandler("bestpicks",             bestpicks_command))
+    app.add_handler(CommandHandler("scalp",                 scalp_command))
+    app.add_handler(CommandHandler("arb",                   arb_command))
+    app.add_handler(CommandHandler("news",                  news_command))
+    app.add_handler(CommandHandler("subscribe",             subscribe_command))
+    app.add_handler(CommandHandler("unsubscribe",           unsubscribe_command))
+    app.add_handler(CommandHandler("subscribe_bestpicks",   subscribe_bestpicks_command))
+    app.add_handler(CommandHandler("unsubscribe_bestpicks", unsubscribe_bestpicks_command))
+    app.add_handler(CommandHandler("dashboard",             dashboard_command))
+    app.add_handler(CommandHandler("setup",                 setup_command))
+    app.add_handler(CommandHandler("propfirm",              propfirm_setup_command))
+    app.add_handler(CommandHandler("lotsize",               lotsize_command))
+    app.add_handler(CommandHandler("updatepnl",             updatepnl_command))
+    app.add_handler(CommandHandler("journal",               journal_command))
+    app.add_handler(CommandHandler("logtrade",              logtrade_command))
+    app.add_handler(CommandHandler("status",                status_command))
+
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    logger.info("🤖 Bot started. Polling...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
