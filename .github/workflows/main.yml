@@ -2,7 +2,7 @@ name: Run Forex Bot 24/7
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every 5 minutes
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -26,5 +26,18 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        # Run for 270s (4.5 min), gracefully stop, || true prevents failure on timeout
-        run: timeout 270 python app.py || true
+        run: |
+          echo "Starting bot..."
+          python app.py &
+          BOT_PID=$!
+          sleep 10
+          if kill -0 $BOT_PID 2>/dev/null; then
+            echo "Bot is running (PID $BOT_PID)"
+            sleep 250
+            kill $BOT_PID 2>/dev/null || true
+            echo "Bot stopped after timeout"
+          else
+            echo "ERROR: Bot crashed on startup!"
+            wait $BOT_PID
+            exit 1
+          fi
