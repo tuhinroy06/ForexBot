@@ -370,8 +370,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/minors — Minor crosses\n"
         "/commodities — Gold & Silver\n"
         "/bestpicks — Top 3 signals right now\n"
-        "/subscribe\\\_bestpicks 4 — Auto best picks every 4 hrs\n"
-        "/unsubscribe\\\_bestpicks — Stop auto best picks\n"
+        "/subscribe_bestpicks 4 — Auto best picks every 4 hrs\n"
+        "/unsubscribe_bestpicks — Stop auto best picks\n"
         "/subscribe — Hourly all signals\n"
         "/unsubscribe — Stop hourly signals\n"
         "/news — Economic calendar\n\n"
@@ -847,7 +847,7 @@ async def subscribe_bestpicks_command(update: Update, context: ContextTypes.DEFA
         f"✅ *Best Picks Subscribed!*\n\n"
         f"You'll receive the top 3 highest confidence signals every *{hours} hour(s)*.\n"
         f"Only HIGH and MEDIUM quality signals are included.\n\n"
-        f"Use /unsubscribe\\\_bestpicks to stop.",
+        "Use /unsubscribe_bestpicks to stop.",
         parse_mode="Markdown",
     )
 
@@ -1023,7 +1023,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⭐⭐⭐ HIGH   → H4 aligned + London/NY session\n"
             "⭐⭐ MEDIUM  → H4 aligned\n"
             "⚠️ LOW      → H4 conflict — skip\n\n"
-            "/subscribe\\_bestpicks 4 → best picks every 4hrs\n"
+            "/subscribe_bestpicks 4 → best picks every 4hrs\n"
             "/setup FTMO 10000 1000 500 1000 1 → prop firm setup\n"
             "Trade HIGH quality signals only."
         )
