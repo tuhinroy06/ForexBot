@@ -29,18 +29,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: python -c "
-import traceback
-try:
-    import app
-    print('SUCCESS: app imported OK')
-except Exception as e:
-    print('IMPORT ERROR:')
-    traceback.print_exc()
-"
-
-      - name: Run bot
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: timeout 270 python app.py 2>&1 || true
+        run: python -c
