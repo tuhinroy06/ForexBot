@@ -943,14 +943,14 @@ class ScalpingEngine:
             # Compute indicators
             vwap_v     = self.vwap(df_m5).iloc[-1]
             mom_v      = self.momentum(close).iloc[-1]
-            rsi_v      = SignalEngine.rsi(SignalEngine, close).iloc[-1] if hasattr(SignalEngine, 'rsi') else 50
+            rsi_v      = SignalEngine.rsi(close).iloc[-1]
             tick_flow  = self.tick_structure(df_m5)
             spread     = self.spread_volatility(df_m5)
             micro_sr   = self.micro_support_resistance(df_m5)
             engulf     = self.engulfing(df_m5)
             pin        = self.pin_bar(df_m5)
             ribbon     = self.ema_ribbon(close)
-            atr_v      = SignalEngine.atr(SignalEngine, df_m5).iloc[-1]
+            atr_v      = SignalEngine.atr(df_m5).iloc[-1]
 
             # M15 trend for confirmation
             m15_trend = "BULL"
